@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { InspectionLog } from '../types';
-import { CheckCircle, AlertTriangle, CloudUpload, FileDown, Home } from 'lucide-react';
+import { CheckCircle, AlertTriangle, Upload, FileDown, Home } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { storageService } from '../services/storageService';
 import { checkSupabaseConfig } from '../services/supabaseClient';
@@ -161,7 +161,7 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
           >
             {isProcessing ? 'Procesando...' : (
                <>
-                <CloudUpload className="w-5 h-5" /> Finalizar y Subir a Nube
+                <Upload className="w-5 h-5" /> Finalizar y Subir a Nube
                </>
             )}
           </button>
