@@ -7,7 +7,7 @@ import { InspectionRunner } from './components/InspectionRunner';
 import { InspectionSummary } from './components/InspectionSummary';
 import { InspectionHistory } from './components/InspectionHistory';
 import { Toaster, toast } from 'react-hot-toast';
-import { Menu, X, Settings, ListChecks, History, Wifi, WifiOff, RefreshCw, Lock, User, ArrowRight } from 'lucide-react';
+import { Menu, X, Settings, ListChecks, History, Wifi, WifiOff, RefreshCw, Lock, User, ArrowRight, Database } from 'lucide-react';
 import { checkSupabaseConfig } from './services/supabaseClient';
 
 export default function App() {
@@ -15,6 +15,9 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
+  
+  // Loading State
+  const [isLoadingData, setIsLoadingData] = useState(false);
 
   const [currentView, setCurrentView] = useState<AppView>(AppView.HOME);
   const [selectedSite, setSelectedSite] = useState<Site | null>(null);
@@ -30,7 +33,7 @@ export default function App() {
   useEffect(() => {
     const handleStatusChange = () => {
       setIsOnline(navigator.onLine);
-      if (navigator.onLine && isAuthenticated) {
+      if (navigator.onLine && isAuthenticated && !isLoadingData) {
         triggerSync();
       }
     };
@@ -38,30 +41,37 @@ export default function App() {
     window.addEventListener('online', handleStatusChange);
     window.addEventListener('offline', handleStatusChange);
 
-    // Initial load
-    if (isAuthenticated) {
-        storageService.getSites();
-        updatePendingCount();
-        if (navigator.onLine) triggerSync();
-    }
-
     return () => {
       window.removeEventListener('online', handleStatusChange);
       window.removeEventListener('offline', handleStatusChange);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isLoadingData]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loginUser === 'Aridos25' && loginPass === 'Rioja') {
       setIsAuthenticated(true);
+      
+      // BLOCKING INITIAL LOAD
+      if (navigator.onLine && checkSupabaseConfig()) {
+          setIsLoadingData(true);
+          try {
+             await storageService.performInitialLoad();
+          } catch(e) {
+             console.error("Load failed", e);
+             toast.error("Error cargando datos de nube");
+          } finally {
+             // Ensure we minimum show spinner for UX feedback or until done
+             setIsLoadingData(false);
+             updatePendingCount();
+          }
+      } else {
+         // Offline or no config
+         updatePendingCount();
+      }
+      
       toast.success('Bienvenido');
-      // Trigger data load after login
-      setTimeout(() => {
-        storageService.getSites();
-        updatePendingCount();
-        if (navigator.onLine) triggerSync();
-      }, 100);
+
     } else {
       toast.error('Credenciales incorrectas');
     }
@@ -192,6 +202,27 @@ export default function App() {
     );
   }
 
+  // --- FULL SCREEN DATA LOADER ---
+  if (isLoadingData) {
+      return (
+          <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white p-6">
+              <div className="w-24 h-24 mb-8 relative">
+                  <div className="absolute inset-0 border-4 border-slate-600 rounded-full"></div>
+                  <div className="absolute inset-0 border-4 border-safety-500 border-t-transparent rounded-full animate-spin"></div>
+                  <RefreshCw className="absolute inset-0 m-auto w-8 h-8 text-safety-500 animate-pulse" />
+              </div>
+              <h2 className="text-2xl font-bold mb-2">Sincronizando Datos</h2>
+              <p className="text-slate-400 text-center max-w-xs">
+                  Descargando configuración de centros e historial de inspecciones desde la nube...
+              </p>
+              <div className="mt-8 flex items-center gap-2 text-xs text-slate-500 bg-slate-800 px-4 py-2 rounded-full">
+                  <Database className="w-3 h-3" />
+                  <span>Por favor espere, no cierre la aplicación.</span>
+              </div>
+          </div>
+      );
+  }
+
   // --- MAIN APP ---
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
@@ -306,4 +337,3 @@ export default function App() {
       </main>
     </div>
   );
-}
