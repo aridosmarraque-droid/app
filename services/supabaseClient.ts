@@ -45,13 +45,13 @@ const memoryStorage = {
 };
 
 // 5. FIX: Fetch personalizado para evitar Tracking Prevention
-// Forzamos 'credentials: omit' para que no se envíen cookies de terceros,
-// lo cual desbloquea la petición en navegadores estrictos (Edge/Safari).
-// FIX TS2322: Usamos tipos 'any' para ser compatibles con la firma de fetch (RequestInfo | URL)
+// Forzamos 'credentials: omit' para que no se envíen cookies de terceros.
+// Añadimos 'referrerPolicy: no-referrer' para privacidad adicional.
 const customFetch = (input: any, init?: any) => {
   return fetch(input, {
     ...init,
-    credentials: 'omit', // IMPORTANTE: No enviar cookies
+    credentials: 'omit', // No enviar cookies
+    referrerPolicy: 'no-referrer', // No enviar origen completo
   });
 };
 
@@ -64,7 +64,7 @@ export const supabase = isConfigured
         detectSessionInUrl: false
       },
       global: {
-        fetch: customFetch // Inyectamos el fetch modificado
+        fetch: customFetch 
       }
     }) 
   : null;
