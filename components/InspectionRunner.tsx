@@ -1,6 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Site, InspectionLog, Answer } from '../types';
-import { Camera, Check, X, ChevronRight, AlertCircle, RotateCcw, User, Mail, CreditCard, MessageSquare } from 'lucide-react';
+import { Camera, Check, X, ChevronRight, AlertCircle, RotateCcw, User, Mail, CreditCard, MessageSquare, ImageIcon } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 interface Props {
@@ -9,7 +9,38 @@ interface Props {
   onCancel: () => void;
 }
 
+// Helper to compress images before storing them
+const compressImage = (base64Str: string, maxWidth = 1024, quality = 0.6): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxWidth) {
+        height = (height * maxWidth) / width;
+        width = maxWidth;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+      } else {
+          resolve(base64Str); // Fallback
+      }
+    };
+    img.onerror = () => resolve(base64Str); // Fallback
+  });
+};
+
 export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }) => {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
   // Flatten points structure to linear steps
   const steps = useMemo(() => {
     const list: { areaName: string; areaId: string; point: any; index: number; total: number }[] = [];
@@ -36,14 +67,20 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
   const [selectedStatus, setSelectedStatus] = useState<boolean | null>(null);
   const [tempPhoto, setTempPhoto] = useState<string | null>(null);
   const [comment, setComment] = useState<string>('');
+  const [isCompressing, setIsCompressing] = useState(false);
 
   const currentStep = currentStepIndex >= 0 ? steps[currentStepIndex] : null;
 
-  // Reset local state when step changes
+  // Reset local state when step changes and SCROLL TO TOP
   useEffect(() => {
     setSelectedStatus(null);
     setTempPhoto(null);
     setComment('');
+    
+    // Force scroll to top
+    if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = 0;
+    }
   }, [currentStepIndex]);
 
   const handleStart = () => {
@@ -101,12 +138,22 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     }
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setIsCompressing(true);
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setTempPhoto(reader.result as string);
+      reader.onloadend = async () => {
+        try {
+            const rawBase64 = reader.result as string;
+            // Compress to avoid QuotaExceededError in localStorage
+            const compressed = await compressImage(rawBase64);
+            setTempPhoto(compressed);
+        } catch(err) {
+            toast.error("Error procesando imagen");
+        } finally {
+            setIsCompressing(false);
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -194,10 +241,9 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
 
   return (
     <div className="flex flex-col h-[calc(100vh-6rem)] relative">
-      {/* Header Info */}
+      {/* Header Info - Step counter */}
       <div className="mb-4">
-        <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-          <span>{currentStep?.areaName}</span>
+        <div className="flex justify-end text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
           <span>Paso {currentStepIndex + 1}/{steps.length}</span>
         </div>
         <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
@@ -208,16 +254,22 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
         </div>
       </div>
 
-      {/* Main Card */}
-      <div className="flex-1 overflow-y-auto pb-20 no-scrollbar">
+      {/* Main Card with Scroll Reference */}
+      <div 
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto pb-24 no-scrollbar scroll-smooth"
+      >
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-8">
           
-          {/* 1. Typography Adjusted: Title Bigger, Question Smaller */}
+          {/* 1. Typography Adjusted: Zone Blue/Large, Point Large */}
           <div>
+            <div className="text-xl font-bold text-blue-600 mb-1 leading-tight">
+               {currentStep?.areaName}
+            </div>
             <h3 className="text-xl font-bold text-slate-800 mb-2 uppercase leading-tight">
               {currentStep?.point.name}
             </h3>
-            <h2 className="text-lg font-medium text-slate-600 leading-snug">
+            <h2 className="text-lg font-medium text-slate-500 leading-snug">
               {currentStep?.point.question}
             </h2>
           </div>
@@ -274,7 +326,12 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
                 Foto Requerida
               </label>
               <div className={`border-2 border-dashed rounded-xl overflow-hidden transition-colors ${tempPhoto ? 'border-safety-500' : 'border-slate-300 bg-slate-50'}`}>
-                {tempPhoto ? (
+                {isCompressing ? (
+                    <div className="h-48 flex flex-col items-center justify-center text-slate-400">
+                        <div className="w-8 h-8 border-4 border-slate-300 border-t-safety-500 rounded-full animate-spin mb-2"></div>
+                        <p className="text-xs">Procesando imagen...</p>
+                    </div>
+                ) : tempPhoto ? (
                   <div className="relative h-56 bg-black">
                     <img src={tempPhoto} alt="Evidence" className="w-full h-full object-contain" />
                     <button 
@@ -296,7 +353,9 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
               </div>
             </div>
           ) : null}
-
+          
+          {/* Spacer for bottom nav */}
+          <div className="h-4"></div>
         </div>
       </div>
 
@@ -311,9 +370,9 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
           </button>
           <button 
             onClick={handleNext}
-            disabled={selectedStatus === null}
+            disabled={selectedStatus === null || isCompressing}
             className={`flex-1 flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-bold shadow-lg transition-all ${
-              selectedStatus !== null 
+              selectedStatus !== null && !isCompressing
                 ? 'bg-safety-600 text-white shadow-safety-200 active:scale-[0.98]' 
                 : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
             }`}
