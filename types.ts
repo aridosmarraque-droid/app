@@ -27,6 +27,7 @@ export interface Answer {
   areaName: string;
   isOk: boolean; // Yes/No
   photoUrl?: string;
+  comments?: string; // Nuevo campo de comentarios
   timestamp: number;
 }
 
