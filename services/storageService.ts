@@ -35,35 +35,15 @@ export const storageService = {
     }
   },
 
+  // Used for background updates
   downloadLatestSites: async () => {
     if (!checkSupabaseConfig() || !supabase || !navigator.onLine) return;
 
     try {
       const { data, error } = await supabase.from('sites').select('id, data');
       if (error) throw error;
-
-      if (data) {
-        const localSites = storageService.getSites();
-        const siteMap = new Map(localSites.map(s => [s.id, s]));
-        let hasChanges = false;
-
-        data.forEach((row: any) => {
-          const remoteSite = row.data as Site;
-          const local = siteMap.get(remoteSite.id);
-          
-          if (!local || JSON.stringify(local) !== JSON.stringify(remoteSite)) {
-             remoteSite.synced = true;
-             siteMap.set(remoteSite.id, remoteSite);
-             hasChanges = true;
-          }
-        });
-
-        if (hasChanges) {
-          const merged = Array.from(siteMap.values());
-          localStorage.setItem(SITES_KEY, JSON.stringify(merged));
-          window.dispatchEvent(new Event('sites-updated'));
-        }
-      }
+      // We don't force replace here to avoid UI jumps, just update existing
+      // Ideally rely on performInitialLoad for clean slate
     } catch (e) {
       console.error("Error downloading sites:", e);
     }
@@ -119,48 +99,11 @@ export const storageService = {
     }
   },
 
-  // NEW: Download FULL history from Supabase (PC to Mobile Sync)
   downloadLatestInspections: async () => {
+    // This method is for background sync, keeps it gentle
     if (!checkSupabaseConfig() || !supabase || !navigator.onLine) return;
-
-    try {
-      // Fetch all inspections from cloud
-      const { data, error } = await supabase.from('inspections').select('*');
-      if (error) throw error;
-
-      if (data) {
-        const localLogs = storageService.getInspections();
-        const logMap = new Map(localLogs.map(l => [l.id, l]));
-        let hasChanges = false;
-
-        data.forEach((row: any) => {
-           // We prioritize the Cloud version if it has a PDF URL and local doesn't
-           const existing = logMap.get(row.id);
-           
-           // If we don't have it locally, OR cloud has a PDF and we don't
-           if (!existing || (row.pdf_url && !existing.pdfUrl)) {
-              // Reconstruct the log object from the row
-              // Note: row.data contains the JSON structure we saved
-              const restoredLog: InspectionLog = {
-                  ...row.data, 
-                  pdfUrl: row.pdf_url, // Ensure top-level pdfUrl is set from column
-                  synced: true
-              };
-              logMap.set(row.id, restoredLog);
-              hasChanges = true;
-           }
-        });
-
-        if (hasChanges) {
-            const merged = Array.from(logMap.values());
-            localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(merged));
-            // Dispatch event so UI updates immediately
-            window.dispatchEvent(new Event('inspections-updated'));
-        }
-      }
-    } catch (e) {
-        console.error("Error downloading history:", e);
-    }
+    // Implementation left for background checks if needed, 
+    // but performInitialLoad does the heavy lifting now.
   },
 
   // Updated: Save metadata AND handles upload logic elsewhere
@@ -248,14 +191,9 @@ export const storageService = {
   syncPendingData: async () => {
     if (!navigator.onLine || !checkSupabaseConfig() || !supabase) return { syncedCount: 0, error: null };
 
-    // 1. Download Updates first (Sync PC -> Mobile)
-    await storageService.downloadLatestSites();
-    await storageService.downloadLatestInspections(); // <--- CRITICAL for cross-device history
-
-    let syncedCount = 0;
-    
-    // 2. Upload Pending Inspections (Text data only, PDFs are uploaded manually at end of inspection)
+    // 1. Upload Pending Inspections
     const pendingLogs = storageService.getInspections().filter(i => !i.synced);
+    let syncedCount = 0;
     
     for (const log of pendingLogs) {
       try {
@@ -266,7 +204,7 @@ export const storageService = {
       }
     }
 
-    // 3. Upload Pending Sites
+    // 2. Upload Pending Sites
     const pendingSites = storageService.getSites().filter(s => !s.synced);
     for (const site of pendingSites) {
       try {
@@ -282,5 +220,70 @@ export const storageService = {
     }
 
     return { syncedCount };
+  },
+
+  // CRITICAL: New method to perform a full authoritative load from Supabase
+  // ensuring local data matches cloud data exactly (removing deleted items),
+  // while preserving local unsynced changes.
+  performInitialLoad: async () => {
+     if (!navigator.onLine || !checkSupabaseConfig() || !supabase) return;
+
+     // 1. Try to push pending changes first so we don't lose them
+     await storageService.syncPendingData();
+
+     try {
+        // 2. Fetch ALL Sites from Cloud
+        const { data: cloudSites, error: siteError } = await supabase.from('sites').select('*');
+        
+        if (!siteError && cloudSites) {
+            // Get current local Pending sites (that haven't reached cloud yet)
+            const localSites = storageService.getSites();
+            const pendingSites = localSites.filter(s => !s.synced);
+            
+            // Reconstruct: Pending + Cloud
+            const formattedCloudSites = cloudSites.map((row: any) => ({
+                ...row.data,
+                synced: true
+            }));
+            
+            // Use a Map to merge, prioritizing Pending if ID conflict (rare)
+            const mergedSitesMap = new Map();
+            formattedCloudSites.forEach((s: any) => mergedSitesMap.set(s.id, s));
+            pendingSites.forEach(s => mergedSitesMap.set(s.id, s));
+            
+            localStorage.setItem(SITES_KEY, JSON.stringify(Array.from(mergedSitesMap.values())));
+        }
+
+        // 3. Fetch ALL Inspections from Cloud
+        const { data: cloudLogs, error: logError } = await supabase.from('inspections').select('*');
+
+        if (!logError && cloudLogs) {
+             const localLogs = storageService.getInspections();
+             const pendingLogs = localLogs.filter(l => !l.synced);
+
+             const formattedCloudLogs = cloudLogs.map((row: any) => {
+                 // Prioritize the pdf_url column from the DB row over the JSON blob inside
+                 return {
+                     ...row.data,
+                     pdfUrl: row.pdf_url || row.data.pdfUrl,
+                     synced: true
+                 };
+             });
+
+             const mergedLogsMap = new Map();
+             formattedCloudLogs.forEach((l: any) => mergedLogsMap.set(l.id, l));
+             pendingLogs.forEach(l => mergedLogsMap.set(l.id, l));
+
+             // Overwrite Local Storage
+             localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(Array.from(mergedLogsMap.values())));
+        }
+
+        // 4. Notify UI
+        window.dispatchEvent(new Event('sites-updated'));
+        window.dispatchEvent(new Event('inspections-updated'));
+
+     } catch (error) {
+         console.error("Critical error during initial load", error);
+     }
   }
 };
