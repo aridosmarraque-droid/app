@@ -66,9 +66,11 @@ export const storageService = {
             freshSites[freshIndex].synced = true;
             localStorage.setItem(SITES_KEY, JSON.stringify(freshSites));
           }
+        } else {
+            console.error("Supabase Save Site Error:", error);
         }
       } catch (e) {
-        console.warn("Offline: Site saved locally only.");
+        console.warn("Offline or Blocked: Site saved locally only.", e);
       }
     }
   },
@@ -78,7 +80,8 @@ export const storageService = {
     localStorage.setItem(SITES_KEY, JSON.stringify(sites));
 
     if (checkSupabaseConfig() && navigator.onLine && supabase) {
-      await supabase.from('sites').delete().eq('id', siteId);
+      const { error } = await supabase.from('sites').delete().eq('id', siteId);
+      if (error) console.error("Supabase Delete Site Error:", error);
     }
   },
 
@@ -138,7 +141,7 @@ export const storageService = {
          }
          return true;
       } catch (error) {
-        console.warn("Upload failed, saved locally.", error);
+        console.error("Upload failed, saved locally.", error);
         return false;
       }
     }
@@ -198,8 +201,9 @@ export const storageService = {
     
     for (const site of pendingSites) {
       try {
-         await supabase.from('sites').upsert({ id: site.id, data: site });
-         
+         const { error } = await supabase.from('sites').upsert({ id: site.id, data: site });
+         if (error) throw error;
+
          // Re-read to save
          const currentSites = storageService.getSites();
          const siteIdx = currentSites.findIndex(s => s.id === site.id);
