@@ -234,10 +234,19 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
                           <div className="flex-1">
                              <h4 className="font-bold text-slate-700">{ans.pointName}</h4>
                              <p className="text-sm text-slate-500 mb-1">{ans.question}</p>
-                             <div className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold ${ans.isOk ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                {ans.isOk ? <CheckCircle className="w-3 h-3"/> : <AlertTriangle className="w-3 h-3"/>}
-                                {ans.isOk ? 'CONFORME' : 'NO CONFORME'}
+                             
+                             <div className="flex items-center gap-2 mb-1">
+                                <div className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold ${ans.isOk ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                    {ans.isOk ? <CheckCircle className="w-3 h-3"/> : <AlertTriangle className="w-3 h-3"/>}
+                                    {ans.isOk ? 'CONFORME' : 'NO CONFORME'}
+                                </div>
                              </div>
+
+                             {ans.comments && (
+                                <p className="text-xs text-slate-600 italic bg-slate-50 p-2 rounded mt-2 border border-slate-100">
+                                   " {ans.comments} "
+                                </p>
+                             )}
                           </div>
                           {ans.photoUrl && (
                             <div className="w-32 h-24 flex-shrink-0 bg-slate-100 border border-slate-200 rounded overflow-hidden">
@@ -261,6 +270,7 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
                        <th className="p-2">Área</th>
                        <th className="p-2">Punto</th>
                        <th className="p-2">Estado</th>
+                       <th className="p-2">Notas</th>
                      </tr>
                    </thead>
                    <tbody>
@@ -269,6 +279,7 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
                          <td className="p-2">{item.areaName}</td>
                          <td className="p-2 font-medium">{item.pointName}</td>
                          <td className="p-2 text-red-600 font-bold">NO OK</td>
+                         <td className="p-2 text-xs italic text-slate-500">{item.comments || '-'}</td>
                        </tr>
                      ))}
                    </tbody>
