@@ -51,24 +51,31 @@ export const AdminDashboard: React.FC = () => {
     }
     
     setIsTestingConnection(true);
-    const toastId = toast.loading("Probando conexión...");
+    const toastId = toast.loading("Verificando tablas y conexión...");
     
     try {
-      // Intenta una operación simple de lectura (count) que no requiera datos reales
-      const { count, error } = await supabase
+      // 1. Verificar tabla 'sites'
+      const { error: sitesError } = await supabase
         .from('sites')
-        .select('*', { count: 'exact', head: true });
+        .select('id')
+        .limit(1);
         
-      if (error) {
-        throw error;
-      }
+      if (sitesError) throw new Error(`Error en tabla 'sites': ${sitesError.message}`);
+
+      // 2. Verificar tabla 'inspections'
+      const { error: inspError } = await supabase
+        .from('inspections')
+        .select('id')
+        .limit(1);
+
+      if (inspError) throw new Error(`Error en tabla 'inspections': ${inspError.message}`);
       
-      toast.success(`Conexión Exitosa. (Status: 200)`, { id: toastId });
-      alert(`✅ Conexión establecida con Supabase.\nRespuesta OK.\n\nNota: Si las tablas no existen, esto podría fallar al guardar datos reales.`);
+      toast.success(`Conexión Verificada`, { id: toastId });
+      alert(`✅ TODO CORRECTO\n\nConexión establecida y tablas validadas.\nEl backend está listo para sincronizar datos.`);
     } catch (e: any) {
       console.error("Test Connection Error:", e);
-      toast.error("Error de Conexión", { id: toastId });
-      alert(`❌ Error al conectar con Supabase:\n\n${JSON.stringify(e, null, 2)}\n\nMensaje: ${e.message || 'Desconocido'}\n\nPosible causa: Bloqueo de red, claves incorrectas o tabla inexistente.`);
+      toast.error("Error de Verificación", { id: toastId });
+      alert(`❌ Error de Conexión:\n\n${e.message}\n\nRevisa que has ejecutado el script SQL en Supabase para crear las tablas.`);
     } finally {
       setIsTestingConnection(false);
     }
