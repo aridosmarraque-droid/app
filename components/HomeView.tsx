@@ -11,7 +11,16 @@ export const HomeView: React.FC<HomeViewProps> = ({ onSelectSite }) => {
   const [sites, setSites] = useState<Site[]>([]);
 
   useEffect(() => {
+    // Initial load
     setSites(storageService.getSites());
+
+    // Listen for updates from sync or admin panel
+    const handleUpdate = () => {
+      setSites(storageService.getSites());
+    };
+
+    window.addEventListener('sites-updated', handleUpdate);
+    return () => window.removeEventListener('sites-updated', handleUpdate);
   }, []);
 
   return (
