@@ -4,22 +4,8 @@ import { supabase, checkSupabaseConfig } from './supabaseClient';
 const SITES_KEY = 'sp_sites';
 const INSPECTIONS_KEY = 'sp_inspections';
 
-// Seed data
-const SEED_SITES: Site[] = [
-  {
-    id: 'site-1',
-    name: 'Cantera Los Álamos (Demo)',
-    areas: [
-      {
-        id: 'area-1',
-        name: 'Caseta de Control',
-        points: [
-          { id: 'pt-1', name: 'Extintor Principal', question: '¿El extintor está cargado?', requiresPhoto: true, photoInstruction: 'Foto manómetro' }
-        ]
-      }
-    ]
-  }
-];
+// Seed data: EMPTY now because we are connected to real data
+const SEED_SITES: Site[] = [];
 
 export const storageService = {
   // --- SITES MANAGEMENT ---
@@ -31,11 +17,23 @@ export const storageService = {
         localStorage.setItem(SITES_KEY, JSON.stringify(SEED_SITES));
         return SEED_SITES;
       }
+      
       const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : SEED_SITES;
+      let list = Array.isArray(parsed) ? parsed : [];
+
+      // AUTO-CLEANUP: Remove the old demo site (ID: 'site-1') if it lingers in LocalStorage
+      // This ensures the user only sees their real Supabase data
+      const hasDemo = list.some((s: any) => s.id === 'site-1');
+      if (hasDemo) {
+          console.log("Cleaning up demo site...");
+          list = list.filter((s: any) => s.id !== 'site-1');
+          localStorage.setItem(SITES_KEY, JSON.stringify(list));
+      }
+
+      return list;
     } catch (e) {
       console.error("Error parsing sites", e);
-      return SEED_SITES;
+      return [];
     }
   },
 
