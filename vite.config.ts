@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: 'dist',
-    chunkSizeWarningLimit: 1600, // Increased limit to suppress PDF lib warnings
+    chunkSizeWarningLimit: 2000, // Increased limit to suppress PDF lib warnings
     rollupOptions: {
       output: {
         manualChunks(id) {
