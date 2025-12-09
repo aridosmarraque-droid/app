@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { AppView, Site, InspectionLog } from './types';
+import { AppView, Site, InspectionLog, InspectionDraft } from './types';
 import { storageService } from './services/storageService';
 import { HomeView } from './components/HomeView';
 import { AdminDashboard } from './components/AdminDashboard';
 import { InspectionRunner } from './components/InspectionRunner';
 import { InspectionSummary } from './components/InspectionSummary';
 import { InspectionHistory } from './components/InspectionHistory';
+import { notificationService } from './services/notificationService';
 import { Toaster, toast } from 'react-hot-toast';
 import { Menu, X, Settings, ListChecks, History, Wifi, WifiOff, RefreshCw, Lock, User, ArrowRight, Database } from 'lucide-react';
 import { checkSupabaseConfig } from './services/supabaseClient';
@@ -21,6 +22,7 @@ export default function App() {
 
   const [currentView, setCurrentView] = useState<AppView>(AppView.HOME);
   const [selectedSite, setSelectedSite] = useState<Site | null>(null);
+  const [selectedDraft, setSelectedDraft] = useState<InspectionDraft | undefined>(undefined); // NEW
   const [inspectionResult, setInspectionResult] = useState<InspectionLog | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   
@@ -47,12 +49,17 @@ export default function App() {
     };
   }, [isAuthenticated, isLoadingData]);
 
+  useEffect(() => {
+    if (isAuthenticated && !isLoadingData && isOnline) {
+       notificationService.checkAndNotifyDueInspections();
+    }
+  }, [isAuthenticated, isLoadingData, isOnline]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loginUser === 'Aridos25' && loginPass === 'Rioja') {
       setIsAuthenticated(true);
       
-      // BLOCKING INITIAL LOAD
       if (navigator.onLine && checkSupabaseConfig()) {
           setIsLoadingData(true);
           try {
@@ -61,17 +68,13 @@ export default function App() {
              console.error("Load failed", e);
              toast.error("Error cargando datos de nube");
           } finally {
-             // Ensure we minimum show spinner for UX feedback or until done
              setIsLoadingData(false);
              updatePendingCount();
           }
       } else {
-         // Offline or no config
          updatePendingCount();
       }
-      
       toast.success('Bienvenido');
-
     } else {
       toast.error('Credenciales incorrectas');
     }
@@ -99,15 +102,15 @@ export default function App() {
     }
   };
 
-  const handleStartInspection = (site: Site) => {
+  const handleStartInspection = (site: Site, draft?: InspectionDraft) => {
     setSelectedSite(site);
+    setSelectedDraft(draft); // Pass the draft if it exists
     setCurrentView(AppView.INSPECTION_RUN);
     setIsMenuOpen(false);
   };
 
   const handleFinishInspection = async (log: InspectionLog) => {
     try {
-        // SAVE IMMEDIATELY: Ensure data is persisted before any other UI interaction
         await storageService.saveInspection(log);
         toast.success("Inspección guardada correctamente");
         updatePendingCount();
@@ -128,6 +131,7 @@ export default function App() {
   const handleExitSummary = () => {
     setInspectionResult(null);
     setSelectedSite(null);
+    setSelectedDraft(undefined);
     setCurrentView(AppView.HOME);
   };
   
@@ -307,7 +311,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content Area */}
       <main className="max-w-3xl mx-auto p-4 md:p-6 pb-24">
         {currentView === AppView.HOME && (
           <HomeView onSelectSite={handleStartInspection} />
@@ -324,6 +327,7 @@ export default function App() {
         {currentView === AppView.INSPECTION_RUN && selectedSite && (
           <InspectionRunner 
             site={selectedSite} 
+            initialDraft={selectedDraft} // Pass draft here
             onComplete={handleFinishInspection}
             onCancel={() => setCurrentView(AppView.HOME)}
           />
@@ -337,7 +341,6 @@ export default function App() {
                 if(inspectionResult.status === 'completed' && !selectedSite) {
                     setCurrentView(AppView.HISTORY);
                 } else {
-                    // Even if just finished, data is saved, so safe to go Home/History
                     setCurrentView(AppView.HOME);
                 }
             }}
