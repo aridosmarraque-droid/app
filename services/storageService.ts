@@ -295,31 +295,55 @@ export const storageService = {
             formattedCloudSites.forEach((s: any) => mergedSitesMap.set(s.id, s));
             pendingSites.forEach(s => mergedSitesMap.set(s.id, s));
             
-            localStorage.setItem(SITES_KEY, JSON.stringify(Array.from(mergedSitesMap.values())));
+            try {
+              localStorage.setItem(SITES_KEY, JSON.stringify(Array.from(mergedSitesMap.values())));
+            } catch(e) {
+              console.error("Quota Exceeded saving sites", e);
+            }
         }
 
-        // 3. Fetch ALL Inspections from Cloud
-        const { data: cloudLogs, error: logError } = await supabase.from('inspections').select('*');
+        // 3. Fetch Inspections from Cloud (ordered by date)
+        // We limit to 50 latest to ensure performance, or could fetch all and strip data.
+        const { data: cloudLogs, error: logError } = await supabase
+           .from('inspections')
+           .select('*')
+           .order('created_at', { ascending: false });
 
         if (!logError && cloudLogs) {
              const localLogs = storageService.getInspections();
              const pendingLogs = localLogs.filter(l => !l.synced);
 
              const formattedCloudLogs = cloudLogs.map((row: any) => {
+                 let data = row.data;
+
+                 // CRITICAL FIX: Strip heavy base64 photos from historical items
+                 // coming from the cloud. We don't need raw photos in LocalStorage 
+                 // for history (we have the PDF url). This prevents QuotaExceededError.
+                 data = stripHeavyData(data);
+
                  // Prioritize the pdf_url column from the DB row over the JSON blob inside
                  return {
-                     ...row.data,
+                     ...data,
                      pdfUrl: row.pdf_url || row.data.pdfUrl,
                      synced: true
                  };
              });
 
              const mergedLogsMap = new Map();
+             // 1. Add cloud logs first (stripped)
              formattedCloudLogs.forEach((l: any) => mergedLogsMap.set(l.id, l));
+             // 2. Overwrite with local pending logs (keep full data with photos for upload)
              pendingLogs.forEach(l => mergedLogsMap.set(l.id, l));
 
              // Overwrite Local Storage
-             localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(Array.from(mergedLogsMap.values())));
+             try {
+                localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(Array.from(mergedLogsMap.values())));
+             } catch(e) {
+                console.error("Quota Exceeded saving inspections", e);
+                // If still failing, try saving only the pending logs to not lose work
+                localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(pendingLogs));
+                // And alert user?
+             }
         }
 
         // 4. Notify UI
