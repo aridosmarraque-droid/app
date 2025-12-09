@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { InspectionLog } from '../types';
-import { CheckCircle, AlertTriangle, Upload, FileDown, Home } from 'lucide-react';
+import { CheckCircle, AlertTriangle, Upload, FileDown, Home, ListChecks } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { storageService } from '../services/storageService';
 import { checkSupabaseConfig } from '../services/supabaseClient';
@@ -29,6 +29,17 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
   // Group answers by Area for the report
   const uniqueAreaNames = Array.from(new Set(log.answers.map(a => a.areaName)));
 
+  // Calculate statistics per area for Executive Summary
+  const areaStats = uniqueAreaNames.map(areaName => {
+      const areaAnswers = log.answers.filter(a => a.areaName === areaName);
+      return {
+          name: areaName,
+          total: areaAnswers.length,
+          ok: areaAnswers.filter(a => a.isOk).length,
+          nok: areaAnswers.filter(a => !a.isOk).length
+      };
+  });
+
   const generatePdfBlob = async (): Promise<Blob | null> => {
     if (!reportContainerRef.current || !window.jspdf || !window.html2canvas) {
       toast.error('Librerías PDF no cargadas.');
@@ -54,19 +65,20 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
           scale: 2, // Higher scale for better quality
           useCORS: true,
           logging: false,
-          windowWidth: 1000 // Force width to avoid responsiveness issues
+          windowWidth: 1000, // Force width to avoid responsiveness issues
+          onclone: (clonedDoc: Document) => {
+              // Optional: You can manipulate the DOM before snapshot here if needed
+          }
         });
 
         const imgData = canvas.toDataURL('image/jpeg', 0.90);
         const pdfWidth = pdf.internal.pageSize.getWidth();
-        const pdfHeight = pdf.internal.pageSize.getHeight();
         
-        // Calculate fit
-        const imgWidth = pdfWidth;
-        const imgHeight = (canvas.height * imgWidth) / canvas.width;
+        // Calculate fit respecting aspect ratio
+        const imgHeight = (canvas.height * pdfWidth) / canvas.width;
 
         // Add image to current page
-        pdf.addImage(imgData, 'JPEG', 0, 0, imgWidth, imgHeight);
+        pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, imgHeight);
       }
 
       return pdf.output('blob');
@@ -209,11 +221,124 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
       </div>
 
       {/* --- Hidden Report Template for PDF Generation --- */}
-      {/* We render distinct pages as separate DIVs to control breaks perfectly */}
       <div style={{ position: 'fixed', top: 0, left: '-9999px', zIndex: -50 }}>
         <div ref={reportContainerRef}>
           
-          {/* PAGES 1..N: One page per Area (or more if area is huge, but we start new page per area) */}
+          {/* PAGE 1: Summary, Executive Report & Signatures */}
+          {/* Added more bottom padding (pb-20) to ensure signatures aren't cut off */}
+          <div className="pdf-page bg-white p-10 w-[210mm] min-h-[297mm] relative text-slate-900 font-sans border border-gray-200 pb-20 flex flex-col">
+             <ReportHeader title="Informe de Inspección" showDetails={false} />
+             
+             {/* General Info Block */}
+             <div className="bg-slate-50 p-6 rounded-lg mb-6 border border-slate-200">
+                <h3 className="font-bold text-slate-700 mb-4 uppercase text-xs tracking-wider border-b border-slate-200 pb-2">Datos Generales</h3>
+                <div className="grid grid-cols-2 gap-y-4 gap-x-8 text-sm">
+                    <div>
+                        <span className="block text-slate-400 text-xs">Instalación / Centro</span>
+                        <span className="font-bold text-lg text-slate-800">{log.siteName}</span>
+                    </div>
+                    <div>
+                        <span className="block text-slate-400 text-xs">Fecha y Hora</span>
+                        <span className="font-bold text-lg text-slate-800">{new Date(log.date).toLocaleString()}</span>
+                    </div>
+                    <div>
+                        <span className="block text-slate-400 text-xs">Inspector</span>
+                        <span className="font-bold">{log.inspectorName}</span>
+                        <span className="block text-xs text-slate-500">{log.inspectorDni}</span>
+                    </div>
+                     <div>
+                        <span className="block text-slate-400 text-xs">Resultado Global</span>
+                        <span className={`font-bold ${failedItems.length > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                            {failedItems.length > 0 ? 'CON INCIDENCIAS' : 'APTO / CORRECTO'}
+                        </span>
+                    </div>
+                </div>
+             </div>
+
+             {/* NEW: Executive Summary by Area */}
+             <div className="mb-8">
+                <h3 className="font-bold text-slate-700 mb-2 uppercase text-xs tracking-wider flex items-center gap-2">
+                    <ListChecks className="w-4 h-4" /> Resumen Ejecutivo por Áreas
+                </h3>
+                <table className="w-full text-sm border-collapse border border-slate-200">
+                    <thead className="bg-slate-100 text-slate-700">
+                        <tr>
+                            <th className="p-2 border border-slate-200 text-left">Área Inspeccionada</th>
+                            <th className="p-2 border border-slate-200 text-center w-24">Total Puntos</th>
+                            <th className="p-2 border border-slate-200 text-center w-24 text-green-700">Conformes</th>
+                            <th className="p-2 border border-slate-200 text-center w-24 text-red-700">No Conformes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {areaStats.map(stat => (
+                            <tr key={stat.name}>
+                                <td className="p-2 border border-slate-200 font-medium">{stat.name}</td>
+                                <td className="p-2 border border-slate-200 text-center">{stat.total}</td>
+                                <td className="p-2 border border-slate-200 text-center font-bold text-green-600">{stat.ok}</td>
+                                <td className={`p-2 border border-slate-200 text-center font-bold ${stat.nok > 0 ? 'text-red-600 bg-red-50' : 'text-slate-300'}`}>
+                                    {stat.nok}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+             </div>
+
+             {/* Non-Conformities Table (Only if exists) */}
+             {failedItems.length > 0 && (
+                 <div className="mb-6">
+                    <h3 className="text-sm font-bold text-red-700 mb-2 flex items-center gap-2 uppercase tracking-wider">
+                        <AlertTriangle className="w-4 h-4" /> 
+                        Detalle de No Conformidades
+                    </h3>
+                    <table className="w-full text-xs text-left border-collapse border border-red-100">
+                        <thead className="bg-red-50 text-red-900">
+                            <tr>
+                                <th className="p-2 border border-red-200">Área</th>
+                                <th className="p-2 border border-red-200">Punto</th>
+                                <th className="p-2 border border-red-200">Observación</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {failedItems.map((item, idx) => (
+                                <tr key={idx} className="border-b border-slate-100">
+                                    <td className="p-2 font-medium text-slate-700">{item.areaName}</td>
+                                    <td className="p-2 text-slate-600">{item.pointName}</td>
+                                    <td className="p-2 text-slate-500 italic">{item.comments || "Sin comentarios"}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                 </div>
+             )}
+
+             {/* Signatures - Fixed positioning with mt-auto */}
+             <div className="mt-auto pt-8">
+                <div className="grid grid-cols-2 gap-12">
+                    <div className="border-t-2 border-slate-300 pt-4 text-center">
+                        <div className="h-20 mb-2 bg-slate-50 border border-dashed border-slate-300 rounded flex items-center justify-center text-slate-300 italic text-xs">
+                           Firma Digital Inspector
+                        </div>
+                        <p className="font-bold text-slate-800 text-sm">{log.inspectorName}</p>
+                        <p className="text-xs text-slate-500">Inspector de Seguridad</p>
+                    </div>
+                    <div className="border-t-2 border-slate-300 pt-4 text-center">
+                        <div className="h-20 mb-2 bg-slate-50 border border-dashed border-slate-300 rounded flex items-center justify-center text-slate-300 italic text-xs">
+                           Sello / Firma Empresa
+                        </div>
+                        <p className="font-bold text-slate-800 text-sm">Recibí Conforme</p>
+                        <p className="text-xs text-slate-500">Responsable de Centro</p>
+                    </div>
+                </div>
+             </div>
+
+             {/* Page Number Footer */}
+             <div className="absolute bottom-4 left-0 w-full text-center text-xs text-slate-400 border-t border-slate-100 pt-2 mx-10 w-[calc(100%-80px)]">
+                Página 1 de {uniqueAreaNames.length + 1} - Generado por SeguridadPro
+             </div>
+          </div>
+
+          {/* PAGE 2..N: Detailed Areas */}
           {uniqueAreaNames.map((areaName, index) => (
              <div key={areaName} className="pdf-page bg-white p-10 w-[210mm] min-h-[297mm] relative text-slate-900 font-sans border border-gray-200 mb-4">
                 <ReportHeader title={`Detalle: ${areaName}`} />
@@ -238,7 +363,8 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
                              )}
                           </div>
                           {ans.photoUrl && (
-                            <div className="w-24 h-24 flex-shrink-0 bg-slate-100 border border-slate-200 rounded overflow-hidden">
+                            // UPDATED PHOTO SIZE: w-24 (6rem/96px) -> w-40 (10rem/160px) ~1.6x larger
+                            <div className="w-40 h-40 flex-shrink-0 bg-slate-100 border border-slate-200 rounded overflow-hidden">
                                <img src={ans.photoUrl} className="w-full h-full object-cover" alt="Evidencia" />
                             </div>
                           )}
@@ -248,100 +374,10 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
 
                 {/* Page Number Footer */}
                 <div className="absolute bottom-4 left-0 w-full text-center text-xs text-slate-400">
-                    Página {index + 1} de {uniqueAreaNames.length + 1}
+                    Página {index + 2} de {uniqueAreaNames.length + 1}
                 </div>
              </div>
           ))}
-
-          {/* FINAL PAGE: Summary, Non-Conformities & Signatures */}
-          <div className="pdf-page bg-white p-10 w-[210mm] min-h-[297mm] relative text-slate-900 font-sans border border-gray-200">
-             <ReportHeader title="Resumen Final y Firmas" showDetails={false} />
-             
-             {/* Info Block */}
-             <div className="bg-slate-50 p-6 rounded-lg mb-8 border border-slate-200">
-                <h3 className="font-bold text-slate-700 mb-4 uppercase text-xs tracking-wider border-b border-slate-200 pb-2">Detalles de Inspección</h3>
-                <div className="grid grid-cols-2 gap-y-4 gap-x-8 text-sm">
-                    <div>
-                        <span className="block text-slate-400 text-xs">Instalación / Centro</span>
-                        <span className="font-bold text-lg text-slate-800">{log.siteName}</span>
-                    </div>
-                    <div>
-                        <span className="block text-slate-400 text-xs">Fecha y Hora</span>
-                        <span className="font-bold text-lg text-slate-800">{new Date(log.date).toLocaleString()}</span>
-                    </div>
-                    <div>
-                        <span className="block text-slate-400 text-xs">Inspector</span>
-                        <span className="font-bold">{log.inspectorName}</span>
-                        <span className="block text-xs text-slate-500">{log.inspectorDni}</span>
-                    </div>
-                     <div>
-                        <span className="block text-slate-400 text-xs">Estado Global</span>
-                        <span className={`font-bold ${failedItems.length > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                            {failedItems.length > 0 ? 'CON INCIDENCIAS' : 'APTO / CORRECTO'}
-                        </span>
-                    </div>
-                </div>
-             </div>
-
-             {/* Non-Conformities Table */}
-             <div className="mb-10">
-                <h3 className="text-lg font-bold text-red-700 mb-3 flex items-center gap-2">
-                    <AlertTriangle className="w-5 h-5" /> 
-                    Listado de No Conformidades
-                </h3>
-                
-                {failedItems.length === 0 ? (
-                    <div className="p-4 bg-green-50 border border-green-100 rounded text-green-700 text-sm font-medium text-center">
-                        No se detectaron incidencias en esta inspección.
-                    </div>
-                ) : (
-                    <table className="w-full text-sm text-left border-collapse">
-                        <thead className="bg-red-50 text-red-900">
-                            <tr>
-                                <th className="p-3 border-b border-red-200">Área</th>
-                                <th className="p-3 border-b border-red-200">Punto de Control</th>
-                                <th className="p-3 border-b border-red-200">Observaciones</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {failedItems.map((item, idx) => (
-                                <tr key={idx} className="border-b border-slate-100">
-                                    <td className="p-3 font-medium text-slate-700">{item.areaName}</td>
-                                    <td className="p-3 text-slate-600">{item.pointName}</td>
-                                    <td className="p-3 text-slate-500 italic">{item.comments || "Sin comentarios"}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
-             </div>
-
-             {/* Signatures */}
-             <div className="mt-auto pt-10">
-                <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-6">Firmas de Conformidad</h3>
-                <div className="grid grid-cols-2 gap-12">
-                    <div className="border-t-2 border-slate-300 pt-4 text-center">
-                        <div className="h-24 mb-2 bg-slate-50 border border-dashed border-slate-300 rounded flex items-center justify-center text-slate-300 italic text-xs">
-                           Firma Digital Inspector
-                        </div>
-                        <p className="font-bold text-slate-800">{log.inspectorName}</p>
-                        <p className="text-xs text-slate-500">Inspector de Seguridad</p>
-                    </div>
-                    <div className="border-t-2 border-slate-300 pt-4 text-center">
-                        <div className="h-24 mb-2 bg-slate-50 border border-dashed border-slate-300 rounded flex items-center justify-center text-slate-300 italic text-xs">
-                           Sello / Firma Empresa
-                        </div>
-                        <p className="font-bold text-slate-800">Recibí Conforme</p>
-                        <p className="text-xs text-slate-500">Responsable de Centro</p>
-                    </div>
-                </div>
-             </div>
-
-             {/* Page Number Footer */}
-             <div className="absolute bottom-4 left-0 w-full text-center text-xs text-slate-400 border-t border-slate-100 pt-2 mx-10 w-[calc(100%-80px)]">
-                Página {uniqueAreaNames.length + 1} de {uniqueAreaNames.length + 1} - Generado por SeguridadPro
-             </div>
-          </div>
 
         </div>
       </div>
