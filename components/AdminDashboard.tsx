@@ -3,7 +3,7 @@ import { Site, Area, InspectionPoint, Periodicity } from '../types';
 import { storageService } from '../services/storageService';
 import { geminiService } from '../services/geminiService';
 import { checkSupabaseConfig, supabase } from '../services/supabaseClient';
-import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase, RefreshCw, AlertTriangle, Phone, CalendarClock } from 'lucide-react';
+import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase, RefreshCw, AlertTriangle, Phone, CalendarClock, Bot, Terminal } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 // Simple UUID generator fallback
@@ -14,7 +14,9 @@ export const AdminDashboard: React.FC = () => {
   const [editingSite, setEditingSite] = useState<Site | null>(null);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [showDbGuide, setShowDbGuide] = useState(false);
+  const [showCronGuide, setShowCronGuide] = useState(false);
   const [hasCopiedSql, setHasCopiedSql] = useState(false);
+  const [hasCopiedCron, setHasCopiedCron] = useState(false);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
 
   useEffect(() => {
@@ -179,7 +181,8 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // UPDATED SQL TO HANDLE EXISTING TABLES
+  // --- SQL SNIPPETS & GUIDES ---
+
   const sqlSnippet = `
 -- 1. TABLA DE SITIOS (Configuración)
 create table if not exists sites (
@@ -194,29 +197,23 @@ create table if not exists inspections (
   site_name text,
   inspector_name text,
   date text,
-  -- Si creas la tabla de cero, se crea esta columna. 
-  -- Si ya existe, ver comando ALTER abajo.
   pdf_url text, 
   data jsonb not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
-
--- IMPORTANTE: SI LA TABLA YA EXISTÍA, EJECUTA ESTO PARA AÑADIR LA COLUMNA:
-alter table inspections add column if not exists pdf_url text;
 
 -- 3. STORAGE (Para PDFs)
 insert into storage.buckets (id, name, public) 
 values ('reports', 'reports', true)
 on conflict (id) do nothing;
 
--- Políticas de Storage (Borra previas para evitar duplicados si re-ejecutas)
 drop policy if exists "Acceso Publico Reports" on storage.objects;
 create policy "Acceso Publico Reports" on storage.objects for select using ( bucket_id = 'reports' );
 
 drop policy if exists "Subida Publica Reports" on storage.objects;
 create policy "Subida Publica Reports" on storage.objects for insert with check ( bucket_id = 'reports' );
 
--- 4. POLÍTICAS DE SEGURIDAD (Row Level Security)
+-- 4. POLÍTICAS DE SEGURIDAD
 alter table sites enable row level security;
 drop policy if exists "Public sites" on sites;
 create policy "Public sites" on sites for all using (true) with check (true);
@@ -226,11 +223,91 @@ drop policy if exists "Public inspections" on inspections;
 create policy "Public inspections" on inspections for all using (true) with check (true);
   `.trim();
 
-  const copySql = () => {
-    navigator.clipboard.writeText(sqlSnippet);
-    setHasCopiedSql(true);
-    toast.success("SQL copiado al portapapeles");
-    setTimeout(() => setHasCopiedSql(false), 2000);
+  // Edge Function Code for Supabase
+  const edgeFunctionCode = `
+import { createClient } from 'jsr:@supabase/supabase-js@2'
+
+// CONFIGURACIÓN ULTRAMSG (VARIABLES DE ENTORNO RECOMENDADAS)
+const INSTANCE_ID = Deno.env.get('ULTRAMSG_INSTANCE_ID') || 'instance99999';
+const TOKEN = Deno.env.get('ULTRAMSG_TOKEN') || 'token123456';
+
+const PERIOD_DAYS = {
+  'mensual': 30,
+  'trimestral': 90,
+  'cuatrimestral': 120,
+  'anual': 365
+};
+
+Deno.serve(async (req) => {
+  try {
+    // 1. Conectar a Base de Datos (Service Role para poder escribir sin restricciones)
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    );
+
+    // 2. Obtener sitios configurados
+    const { data: sites, error: siteError } = await supabase.from('sites').select('*');
+    if (siteError) throw siteError;
+
+    // 3. Obtener inspecciones recientes
+    const { data: inspections, error: inspError } = await supabase
+        .from('inspections')
+        .select('id, data, date, site_name')
+        .order('date', { ascending: false });
+        
+    if (inspError) throw inspError;
+
+    let sentCount = 0;
+    const now = Date.now();
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+
+    for (const row of sites) {
+        const site = row.data;
+        if (!site.periodicity || !site.contactPhone) continue;
+
+        // Verificar cooldown de 7 días
+        const lastSent = site.lastReminderSent || 0;
+        if (now - lastSent < (7 * ONE_DAY)) continue;
+
+        // Encontrar última inspección para este sitio
+        const lastInsp = inspections.find((i: any) => i.data.siteId === site.id);
+        const lastDate = lastInsp ? new Date(lastInsp.date).getTime() : 0;
+        
+        // Calcular días
+        const daysElapsed = (now - lastDate) / ONE_DAY;
+        const limit = PERIOD_DAYS[site.periodicity] || 30;
+
+        if (daysElapsed >= limit) {
+             // ENVIAR WHATSAPP
+             const msg = \`⚠️ *RECORDATORIO DE INSPECCIÓN* ⚠️\\n\\nLa instalación *\${site.name}* requiere una inspección \${site.periodicity}.\\nÚltima inspección: \${lastDate > 0 ? new Date(lastDate).toLocaleDateString() : 'NUNCA'}\\nDías vencidos: \${Math.floor(daysElapsed - limit)}\\n\\nPor favor, acceda a la App para realizarla.\`;
+             
+             await fetch(\`https://api.ultramsg.com/\${INSTANCE_ID}/messages/chat\`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ token: TOKEN, to: site.contactPhone, body: msg })
+             });
+
+             // Actualizar DB
+             site.lastReminderSent = now;
+             await supabase.from('sites').update({ data: site }).eq('id', site.id);
+             sentCount++;
+             console.log(\`Enviado a \${site.name}\`);
+        }
+    }
+
+    return new Response(JSON.stringify({ sent: sentCount }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(String(err), { status: 500 });
+  }
+})
+  `.trim();
+
+  const copyToClipboard = (text: string, setFn: (v: boolean) => void) => {
+    navigator.clipboard.writeText(text);
+    setFn(true);
+    toast.success("Copiado al portapapeles");
+    setTimeout(() => setFn(false), 2000);
   };
 
   if (editingSite) {
@@ -481,7 +558,7 @@ create policy "Public inspections" on inspections for all using (true) with chec
         </button>
       </div>
 
-      {/* Supabase Status / Config Guide */}
+      {/* --- START: DATABASE GUIDE --- */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
          <div 
            className="bg-slate-50 p-4 border-b border-slate-200 flex justify-between items-center cursor-pointer"
@@ -501,18 +578,12 @@ create policy "Public inspections" on inspections for all using (true) with chec
          
          {showDbGuide && (
              <div className="p-4 bg-slate-50 text-sm space-y-4 animate-in slide-in-from-top-2">
-                 {!checkSupabaseConfig() && (
-                    <div className="p-3 bg-orange-100 text-orange-800 rounded-lg text-xs font-medium border border-orange-200">
-                       ⚠️ La sincronización no está activa. Para activarla, sigue estos pasos:
-                    </div>
-                 )}
-
                  {/* Test Connection Button */}
                  {checkSupabaseConfig() && (
                    <button 
                      onClick={handleTestConnection}
                      disabled={isTestingConnection}
-                     className="w-full py-2 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 hover:bg-blue-100"
+                     className="w-full py-2 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 hover:bg-blue-100 mb-2"
                    >
                       {isTestingConnection ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                       Probar Conexión con Supabase
@@ -521,7 +592,6 @@ create policy "Public inspections" on inspections for all using (true) with chec
                  
                  <ol className="list-decimal pl-4 space-y-2 text-slate-600">
                     <li>Crea una cuenta en <a href="https://supabase.com" target="_blank" className="text-blue-600 underline">supabase.com</a> y crea un proyecto.</li>
-                    <li>Ve al menú <strong>Storage</strong> y crea un bucket público llamado <code>reports</code>.</li>
                     <li>
                         Ve al <strong>SQL Editor</strong> en Supabase y ejecuta este código (incluye creación de tablas y buckets):
                         <div className="relative mt-2">
@@ -529,7 +599,7 @@ create policy "Public inspections" on inspections for all using (true) with chec
                                 {sqlSnippet}
                             </pre>
                             <button 
-                                onClick={copySql}
+                                onClick={() => copyToClipboard(sqlSnippet, setHasCopiedSql)}
                                 className="absolute top-2 right-2 p-1 bg-white/10 hover:bg-white/20 rounded text-white"
                                 title="Copiar SQL"
                             >
@@ -537,12 +607,75 @@ create policy "Public inspections" on inspections for all using (true) with chec
                             </button>
                         </div>
                     </li>
-                    <li>Ve a <strong>Project Settings &gt; API</strong> en Supabase.</li>
-                    <li>Copia la <strong>URL</strong> y la <strong>anon public key</strong> al archivo <code>services/supabaseClient.ts</code>.</li>
                  </ol>
              </div>
          )}
       </div>
+      {/* --- END: DATABASE GUIDE --- */}
+
+      {/* --- START: AUTOMATION (CRON) GUIDE --- */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+         <div 
+           className="bg-indigo-50 p-4 border-b border-indigo-100 flex justify-between items-center cursor-pointer"
+           onClick={() => setShowCronGuide(!showCronGuide)}
+         >
+             <div className="flex items-center gap-3">
+                <Bot className="w-5 h-5 text-indigo-600" />
+                <div>
+                   <h3 className="font-bold text-indigo-900 text-sm">Automatización (Cron Job)</h3>
+                   <p className="text-xs text-indigo-500">
+                     Configura avisos automáticos de WhatsApp 
+                   </p>
+                </div>
+             </div>
+             {showCronGuide ? <ArrowUp className="w-4 h-4 text-indigo-400" /> : <ArrowDown className="w-4 h-4 text-indigo-400" />}
+         </div>
+         
+         {showCronGuide && (
+             <div className="p-4 bg-indigo-50 text-sm space-y-4 animate-in slide-in-from-top-2">
+                 <div className="p-3 bg-white border border-indigo-200 rounded-lg text-slate-600">
+                     Esta función ejecutará una comprobación <strong>cada mañana</strong> en el servidor de Supabase. 
+                     Si encuentra una cantera con inspección vencida, enviará un WhatsApp automáticamente vía UltraMsg.
+                 </div>
+
+                 <h4 className="font-bold text-indigo-900 flex items-center gap-2 mt-4">
+                     <Terminal className="w-4 h-4" /> Pasos de Instalación
+                 </h4>
+                 
+                 <ol className="list-decimal pl-4 space-y-3 text-slate-700">
+                    <li>Ve a <strong>Edge Functions</strong> en tu proyecto de Supabase.</li>
+                    <li>Crea una nueva función llamada <code>check-inspections</code>.</li>
+                    <li>Copia y pega este código TypeScript/Deno:
+                        <div className="relative mt-2">
+                            <pre className="bg-slate-900 text-slate-200 p-3 rounded-lg text-xs overflow-x-auto h-48">
+                                {edgeFunctionCode}
+                            </pre>
+                            <button 
+                                onClick={() => copyToClipboard(edgeFunctionCode, setHasCopiedCron)}
+                                className="absolute top-2 right-2 p-1 bg-white/10 hover:bg-white/20 rounded text-white"
+                                title="Copiar Código"
+                            >
+                                {hasCopiedCron ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                            </button>
+                        </div>
+                    </li>
+                    <li>
+                        En la configuración de la función (Settings), añade estas <strong>Variables de Entorno</strong>:
+                        <ul className="list-disc pl-4 mt-1 text-xs font-mono bg-white p-2 rounded border border-indigo-100">
+                            <li>ULTRAMSG_INSTANCE_ID = (tu id)</li>
+                            <li>ULTRAMSG_TOKEN = (tu token)</li>
+                        </ul>
+                    </li>
+                    <li>
+                        Finalmente, activa el <strong>Cron Schedule</strong> en los detalles de la función. <br/>
+                        Ejemplo de expresión cron para las 8:00 AM todos los días: <br/>
+                        <code className="bg-slate-200 px-1 rounded font-bold">0 8 * * *</code>
+                    </li>
+                 </ol>
+             </div>
+         )}
+      </div>
+      {/* --- END: AUTOMATION GUIDE --- */}
 
       <div className="space-y-4">
         {sites.map(site => (
