@@ -224,7 +224,76 @@ export const storageService = {
 
   syncPendingData: async () => {
     if (!navigator.onLine || !checkSupabaseConfig() || !supabase) return { syncedCount: 0, error: null };
-    return { syncedCount: 0 };
+    
+    const inspections = storageService.getInspections();
+    const pending = inspections.filter(i => !i.synced);
+    let syncedCount = 0;
+
+    for (const log of pending) {
+        try {
+            // 1. Resolve and Upload Photos
+            const finalAnswers = await Promise.all(log.answers.map(async (ans) => {
+                if (ans.photoUrl && ans.photoUrl.startsWith('local::')) {
+                    const localId = ans.photoUrl.replace('local::', '');
+                    try {
+                        const base64 = await db.getPhoto(localId);
+                        if (base64) {
+                            const fileName = `photos/${log.siteId}/${ans.pointId}_${ans.timestamp || Date.now()}.jpg`;
+                            
+                            const res = await fetch(base64);
+                            const blob = await res.blob();
+                            
+                            const { error: uploadError } = await supabase!.storage
+                                .from('reports')
+                                .upload(fileName, blob, { contentType: 'image/jpeg', upsert: true });
+
+                            if (!uploadError) {
+                                const { data: urlData } = supabase!.storage.from('reports').getPublicUrl(fileName);
+                                await db.deletePhoto(localId); 
+                                return { ...ans, photoUrl: urlData.publicUrl };
+                            }
+                        }
+                    } catch (photoErr) {
+                        console.error("Photo sync error", photoErr);
+                    }
+                }
+                return ans;
+            }));
+            
+            const updatedLog = { ...log, answers: finalAnswers, synced: true };
+
+            // 2. Upload JSON Data
+            const { error } = await supabase.from('inspections').upsert({
+                id: updatedLog.id,
+                site_name: updatedLog.siteName,
+                inspector_name: updatedLog.inspectorName,
+                date: updatedLog.date,
+                pdf_url: updatedLog.pdfUrl || null,
+                data: updatedLog
+            });
+
+            if (error) throw error;
+
+            // 3. Update Local State (Persist)
+            const currentInspections = storageService.getInspections();
+            const index = currentInspections.findIndex(i => i.id === log.id);
+            if (index >= 0) {
+                currentInspections[index] = updatedLog;
+                localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(currentInspections));
+            }
+            
+            syncedCount++;
+
+        } catch (e) {
+            console.error(`Failed to sync inspection ${log.id}`, e);
+        }
+    }
+
+    if (syncedCount > 0) {
+        window.dispatchEvent(new Event('inspections-updated'));
+    }
+
+    return { syncedCount };
   },
 
   performInitialLoad: async () => {
