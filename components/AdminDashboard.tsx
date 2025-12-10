@@ -95,14 +95,17 @@ export const AdminDashboard: React.FC = () => {
     const toastId = toast.loading("Ejecutando chequeo en la nube...");
 
     try {
-        // We pass a 'force' body param, though your function needs to update to read it.
-        // Even without it, this test will confirm if the function is deployable.
         const { data, error } = await supabase.functions.invoke('check-inspections', {
             body: { manualTest: true }
         });
         
         if (error) {
-            // Check for specific error types
+            console.error("Supabase Function Error:", error);
+            // Check for CORS or Fetch errors usually disguised
+            if (error instanceof Error && (error.message.includes("FetchError") || error.message.includes("Failed to fetch"))) {
+                 throw new Error("Error CORS/Red. Asegúrate de haber actualizado el código de la función (Deploy) para incluir los 'corsHeaders'.");
+            }
+            // Check for 404/500
             if (error instanceof Error && error.message.includes("FunctionsFetchError")) {
                 throw new Error("La función no existe o no está desplegada (404/500).");
             }
@@ -113,13 +116,15 @@ export const AdminDashboard: React.FC = () => {
         if (count > 0) {
             toast.success(`¡Éxito! Se enviaron ${count} WhatsApps.`, { id: toastId });
         } else {
-            toast.success("Chequeo completado. No hay inspecciones vencidas (o ya se enviaron hoy).", { id: toastId, icon: '👍' });
+            toast.success("Chequeo completado. No hay inspecciones vencidas.", { id: toastId, icon: '👍' });
         }
 
     } catch (e: any) {
         console.error(e);
-        toast.error(`Error: ${e.message || 'Fallo al invocar función'}`, { id: toastId });
-        alert("❌ Error invocando la función 'check-inspections'.\n\nCausas probables:\n1. No has hecho click en 'Deploy' en el editor de Supabase.\n2. No has añadido los Secrets (ULTRAMSG_...).\n3. La función se llama diferente (debe ser check-inspections).");
+        toast.error(`Error: ${e.message}`, { id: toastId, duration: 5000 });
+        if (e.message.includes("CORS")) {
+             alert("⚠️ ERROR DE PERMISOS (CORS)\n\nEl navegador bloqueó la petición. \n\nSOLUCIÓN:\nCopia el NUEVO código de la función (abajo en la guía) y haz 'Deploy' de nuevo en Supabase. \n\nHe añadido las cabeceras 'Access-Control-Allow-Origin' necesarias.");
+        }
     } finally {
         setIsRunningCron(false);
     }
@@ -265,13 +270,19 @@ drop policy if exists "Public inspections" on inspections;
 create policy "Public inspections" on inspections for all using (true) with check (true);
   `.trim();
 
-  // Edge Function Code for Supabase
+  // Edge Function Code for Supabase (WITH CORS FIX)
   const edgeFunctionCode = `
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
 // CONFIGURACIÓN ULTRAMSG
 const INSTANCE_ID = Deno.env.get('ULTRAMSG_INSTANCE_ID') || 'instance99999';
 const TOKEN = Deno.env.get('ULTRAMSG_TOKEN') || 'token123456';
+
+// HEADERS CORS (IMPORTANTE: Para evitar errores de bloqueo en navegador)
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
 
 const PERIOD_DAYS = {
   'mensual': 30,
@@ -281,21 +292,24 @@ const PERIOD_DAYS = {
 };
 
 Deno.serve(async (req) => {
+  // 1. GESTIONAR PREFLIGHT (OPTIONS)
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
   try {
     const { manualTest } = await req.json().catch(() => ({ manualTest: false }));
 
-    // 1. Conectar a Base de Datos
+    // 2. Conectar a Base de Datos
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // 2. Obtener sitios con FECHA DE CREACIÓN
-    // Importante: necesitamos 'created_at' para no alertar sitios nuevos inmediatamente
+    // 3. Obtener datos
     const { data: sites, error: siteError } = await supabase.from('sites').select('*');
     if (siteError) throw siteError;
 
-    // 3. Obtener inspecciones recientes
     const { data: inspections, error: inspError } = await supabase
         .from('inspections')
         .select('id, data, date, site_name')
@@ -311,7 +325,7 @@ Deno.serve(async (req) => {
         const site = row.data;
         if (!site.periodicity || !site.contactPhone) continue;
 
-        // Verificar cooldown de 7 días (Saltar si es Test Manual)
+        // Verificar cooldown (Saltar si no es manualTest)
         const lastSent = site.lastReminderSent || 0;
         if (!manualTest && (now - lastSent < (7 * ONE_DAY))) {
              console.log(\`Skipping \${site.name} (Cooldown)\`);
@@ -323,12 +337,10 @@ Deno.serve(async (req) => {
         const creationDate = row.created_at ? new Date(row.created_at).getTime() : 0;
         
         // CORRECCIÓN INTELIGENTE:
-        // Si nunca se ha inspeccionado (lastDate=0), usamos la fecha de creación como referencia.
-        // Así damos un "periodo de gracia" a los sitios nuevos.
+        // Si nunca se ha inspeccionado, usar fecha de creación del sitio
         const referenceDate = lastDate > 0 ? lastDate : creationDate;
-
-        // Si referenceDate sigue siendo 0 (datos antiguos sin created_at), forzamos overdue
-        // pero solo si ha pasado mucho tiempo
+        
+        // Si referenceDate sigue siendo 0, asumir muy antiguo
         const effectiveDate = referenceDate > 0 ? referenceDate : (now - (366 * ONE_DAY)); 
 
         const daysElapsed = (now - effectiveDate) / ONE_DAY;
@@ -343,7 +355,6 @@ Deno.serve(async (req) => {
                 body: new URLSearchParams({ token: TOKEN, to: site.contactPhone, body: msg })
              });
 
-             // Actualizar DB
              site.lastReminderSent = now;
              await supabase.from('sites').update({ data: site }).eq('id', site.id);
              sentCount++;
@@ -351,10 +362,15 @@ Deno.serve(async (req) => {
         }
     }
 
-    return new Response(JSON.stringify({ sent: sentCount }), { headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ sent: sentCount }), { 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    });
   } catch (err) {
     console.error(err);
-    return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
+    return new Response(JSON.stringify({ error: String(err) }), { 
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
   }
 })
   `.trim();
